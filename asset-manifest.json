@@ -1,10 +1,10 @@
 {
   "files": {
-    "main.css": "/songjoochoi.github.io/static/css/main.e6c13ad2.css",
-    "main.js": "/songjoochoi.github.io/static/js/main.cce536be.js",
-    "index.html": "/songjoochoi.github.io/index.html",
-    "main.e6c13ad2.css.map": "/songjoochoi.github.io/static/css/main.e6c13ad2.css.map",
-    "main.cce536be.js.map": "/songjoochoi.github.io/static/js/main.cce536be.js.map"
+    "main.css": "/static/css/main.e6c13ad2.css",
+    "main.js": "/static/js/main.cce536be.js",
+    "index.html": "/index.html",
+    "main.e6c13ad2.css.map": "/static/css/main.e6c13ad2.css.map",
+    "main.cce536be.js.map": "/static/js/main.cce536be.js.map"
   },
   "entrypoints": [
     "static/css/main.e6c13ad2.css",
