@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>심야 괴담 조사</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="main"></canvas>
+<script>
+// ===== 기본 설정 =====
+const W = 320, H = 240;          // 내부 해상도
+const LB = 24;                   // 레터박스 높이
+const GROUND = 204;              // 발이 닿는 y
+const SPEED = 1.2;               // px/frame
+const GAP = 18;                  // 따라오는 간격(px)
+const GAP_FRAMES = Math.round(GAP / SPEED);
+const ROOM_GAP = 24;              // 동아리방(큰 스프라이트)에서의 간격
+function gapFrames() { return scenes[sceneIndex].spriteSuffix ? Math.round(ROOM_GAP / SPEED) : GAP_FRAMES; }
+
+const main = document.getElementById('main');
+const ctx = main.getContext('2d');
+
+const buf = document.createElement('canvas'); buf.width = W; buf.height = H;
+const g = buf.getContext('2d');
+
+const dark = document.createElement('canvas'); dark.width = W; dark.height = H;
+const dg = dark.getContext('2d');
+
+function layer() { const c = document.createElement('canvas'); c.width = W; c.height = H; return [c, c.getContext('2d')]; }
+const [lit, lg] = layer();      // 색조까지 입힌, 어둠 적용 전 장면
+const [mask, mg] = layer();     // 손전등 원뿔 부드러운 마스크
+const [chr, cg] = layer();      // 캐릭터 전용 레이어
+const [chrMask, cmg] = layer(); // 캐릭터 실루엣(색조 범위 제한용)
+
+const noise = document.createElement('canvas'); noise.width = W; noise.height = H;
+const ng = noise.getContext('2d');
+const noiseImg = ng.createImageData(W, H);
+const noise32 = new Uint32Array(noiseImg.data.buffer);
+
+// ===== 장면 그리기 함수 =====
+let pc = g; // px()가 그릴 대상 컨텍스트
+function px(x, y, w, h, c) { pc.fillStyle = c; pc.fillRect(x, y, w, h); }
+
+// ===== 이미지 에셋 =====
+function loadImg(src) { const im = new Image(); im.src = src; return im; }
+function ready(im) { return im.complete && im.naturalWidth > 0; }
+const IMG = {
+  nightroad: loadImg('nightroad.png'),
+  clubfront: loadImg('clubfront.png'),
+  haru: loadImg('girl_haru.png'),
+  mina: loadImg('girl_mina.png'),
+  sora: loadImg('girl_sora.png'),
+  haru_room: loadImg('girl_haru_room.png'),
+  mina_room: loadImg('girl_mina_room.png'),
+  sora_room: loadImg('girl_sora_room.png'),
+  guard: loadImg('npc_guard.png'),
+  senior: loadImg('npc_senior.png'),
+};
+
+function drawNightRoad(cam) {
+  if (ready(IMG.nightroad)) pc.drawImage(IMG.nightroad, 0, LB);
+  // 철문
+  px(290, 112, 5, 96, '#ffffff');
+  px(329, 112, 5, 96, '#ffffff');
+  px(289, 110, 7, 3, '#ffffff'); px(328, 110, 7, 3, '#ffffff');
+  if (state.gateOpen) {
+    // 열린 철문: 문짝을 양옆으로 젖혀 비스듬히 보이게
+    for (let i = 0; i < 4; i++) {
+      px(288 - i * 2, 118 + i * 2, 1, 88 - i * 4, '#f0f0f0');   // 왼쪽 문짝 살
+      px(335 + i * 2, 118 + i * 2, 1, 88 - i * 4, '#f0f0f0');   // 오른쪽 문짝 살
+    }
+    for (const y of [120, 160, 198]) {
+      for (let i = 0; i < 4; i++) { px(288 - i * 2, y + Math.round(i * (y - 160) / 40), 2, 2, '#f8f8f8'); px(334 + i * 2, y + Math.round(i * (y - 160) / 40), 2, 2, '#f8f8f8'); }
+    }
+    for (let i = 0; i < 5; i++) px(295, 150 + i * 2, 1 + (i % 2), 1, '#ffffff'); // 늘어진 쇠사슬
+    return;
+  }
+  px(295, 118, 34, 88, '#4a4a4a');               // 문 너머 어두운 배경(대비용)
+  for (let x = 297; x < 329; x += 4) px(x, 118, 2, 88, '#f0f0f0');
+  px(295, 120, 34, 2, '#f8f8f8'); px(295, 160, 34, 2, '#f8f8f8'); px(295, 200, 34, 2, '#f8f8f8');
+  for (let i = 0; i < 6; i++) px(306 + (i % 2), 156 + i * 2, 12 - (i % 2) * 2, 1, '#ffffff'); // 쇠사슬
+  px(309, 168, 6, 5, '#ffffff'); px(310, 165, 4, 1, '#ffffff'); px(310, 165, 1, 3, '#ffffff'); px(313, 165, 1, 3, '#ffffff'); // 자물쇠
+  px(311, 170, 2, 1, '#404040');
+}
+
+function drawClubFront(cam) {
+  if (ready(IMG.clubfront)) pc.drawImage(IMG.clubfront, 0, LB);
+}
+
+// ===== 장면 데이터 =====
+const scenes = [
+  {
+    name: '밤길', width: 640, tint: '#8a80c8', draw: drawNightRoad,
+    lamps: [{ x: 437, y: 60, post: true }, { x: 515, y: 90, post: true }],
+    blockers: [{ x0: 284, x1: 340 }],
+    exits: [{ side: 'right', to: 1, spawnX: 14, dir: 1 }],
+    // 상호작용 대상: x0~x1 범위에서 16px 이내면 가능
+    targets: [
+      { id: 'gate', x0: 290, x1: 334, top: 110, can: () => !state.gateOpen },
+      { id: 'lot',  x0: 150, x1: 150, top: GROUND - 20, can: () => state.gateOpen && !state.ribbonDropped && !state.eventDone },
+      { id: 'ribbon', get x0() { return state.ribbonX; }, get x1() { return state.ribbonX; }, top: GROUND - 12, can: () => state.ribbonDropped && !state.hasRibbon },
+    ],
+  },
+  {
+    name: '동아리방 건물 앞', width: 640, tint: '#a088b0', draw: drawClubFront,
+    lamps: [{ x: 324, y: 118, post: false }],
+    blockers: [],
+    exits: [{ side: 'left', to: 0, spawnX: 626, dir: -1 }],
+    targets: [
+      { id: 'guard',  x0: 196, x1: 204, top: GROUND - 43, can: () => true },
+      { id: 'senior', x0: 456, x1: 464, top: GROUND - 45, can: () => true },
+      { id: 'door',   x0: 324, x1: 324, top: 132, can: () => true },
+    ],
+    npcs: [{ id: 'guard', x: 200, dir: -1 }, { id: 'senior', x: 460, dir: -1 }],
+  },
+  {
+    name: '동아리방', width: 320, tint: '#a0a8b8', dark: 0.3, draw: drawClubroom,
+    lamps: [],
+    blockers: [],
+    exits: [{ side: 'left', to: 1, spawnX: 324, dir: 1 }],
+    targets: [
+      { id: 'shelf', x0: 80, x1: 206, dist: 0, top: 124, can: () => true },
+    ],
+    shelf: true,
+    spriteSuffix: '_room',
+  },
+];
+
+// ===== 동아리방 배경 =====
+const clubroomImg = new Image();
+clubroomImg.src = 'clubroom.png';
+function drawClubroom() {
+  if (clubroomImg.complete && clubroomImg.naturalWidth) { pc.drawImage(clubroomImg, 0, 24); return; }
+  // clubroom.png가 없을 때만 쓰는 임시 배경(선반 위치 표시용)
+  px(0, 24, 320, 192, '#9a9a9a');
+  px(0, 180, 320, 36, '#b4b4b4');
+  px(80, 100, 128, 46, '#6a6a6a');               // 선반 몸체
+  for (const y of [112, 142]) px(80, y, 128, 3, '#d0d0d0'); // 선반 판(142가 물건 바닥)
+  for (const x of [80, 122, 164, 205]) px(x, 100, 3, 46, '#c0c0c0');
+}
+
+// ===== 진행 상태 =====
+const SHELF_X = [102, 143, 184];
+const SHELF_BOTTOM = 142;
+const state = {
+  heardRumor: false, hasKey: false, gateOpen: false, eventDone: false, items: [],
+  shelf: ['깨진 손거울', null, '오래된 사진'], ribbonLogged: false,
+  ribbonDropped: false, hasRibbon: false, ribbonX: 0,
+};
+// 대사 분기용 보조 상태
+const talk = { guardAlt: 0, seniorThanked: false };
+
+// ===== 캐릭터 =====
+const girls = [
+  { name: '하루', key: 'haru', img: IMG.haru },
+  { name: '미나', key: 'mina', img: IMG.mina },
+  { name: '소라', key: 'sora', img: IMG.sora },
+];
+
+// 스프라이트: 오른쪽 방향 원본, 발 중앙을 (x, GROUND)에, dir -1이면 좌우 반전
+function drawSprite(img, x, dir, bob = 0) {
+  if (img instanceof HTMLImageElement && !ready(img)) return;
+  const w = img.width, h = img.height;
+  pc.save();
+  pc.translate(Math.round(x), GROUND - bob);
+  pc.scale(dir, 1);
+  pc.drawImage(img, -Math.floor(w / 2), -h);
+  pc.restore();
+}
+
+// 단색 실루엣(오프스크린에서 source-in으로 칠함)
+const silCanvas = document.createElement('canvas');
+const silCtx = silCanvas.getContext('2d');
+function silhouette(img, color) {
+  if (!ready(img)) return null;
+  silCanvas.width = img.naturalWidth; silCanvas.height = img.naturalHeight; // 크기 재설정 = 초기화
+  silCtx.drawImage(img, 0, 0);
+  silCtx.globalCompositeOperation = 'source-in';
+  silCtx.fillStyle = color;
+  silCtx.fillRect(0, 0, silCanvas.width, silCanvas.height);
+  silCtx.globalCompositeOperation = 'source-over';
+  return silCanvas;
+}
+
+// ===== 상태 =====
+let sceneIndex = 0;
+const leader = { x: 380, dir: 1 };
+let history = [];
+let moving = false;
+let flashlight = false;
+const keys = {};
+let dialog = [];
+let tick = 0;
+
+function resetHistory() {
+  history = [];
+  const n = gapFrames() * (girls.length - 1) + 1;
+  for (let k = n - 1; k >= 0; k--) history.push({ x: leader.x - leader.dir * SPEED * k, dir: leader.dir });
+}
+resetHistory();
+
+function say(lines) { dialog = dialog.concat(lines); }
+say(['하루：왠지, 바람이 기분 나빠…', '하루：여기서부터 소문의 그 길이야.', '소라：철문 잠겨 있네. *동아리방 쪽(오른쪽)*에 가서 물어보자.']);
+
+// 현재 목표 (state에 따라)
+function currentGoal() {
+  if (!state.heardRumor) return '목표: 건물 앞 경비에게 소문 묻기';
+  if (!state.hasKey) return '목표: 선배에게 철문 이야기하기';
+  if (!state.gateOpen) return '목표: 밤길의 철문 열기';
+  if (!state.hasRibbon) return '목표: 공터를 손전등(F)으로 조사하기';
+  if (!state.ribbonLogged) return '목표: 동아리방 선반에 리본 올리기';
+  return '조사 완료';
+}
+
+// ===== 상호작용 =====
+const INTERACT_DIST = 16;
+function nearTarget() {
+  const scene = scenes[sceneIndex];
+  if (!scene.targets) return null;
+  for (const t of scene.targets) {
+    const d = Math.max(0, t.x0 - leader.x, leader.x - t.x1);
+    if (d <= (t.dist ?? INTERACT_DIST) && t.can()) return t;
+  }
+  return null;
+}
+
+function interact(t) {
+  if (t.id === 'guard') {
+    if (state.hasRibbon) say(['경비：…그 리본, 어디서 났냐.', '경비：10년 전 그 애도 빨간 리본을 하고 있었지.']);
+    else if (state.heardRumor) {
+      say([talk.guardAlt % 2 === 0 ? '경비：…난 경고했다.' : '경비：손전등 없이는 아무것도 안 보일 거다.']);
+      talk.guardAlt++;
+    } else {
+      say(['경비：이 시간에 여학생들끼리 뭐 하냐.', '하루：도시괴담 동아리예요. 공터 소문 조사하러요.', '경비：…그 소문 말이냐.',
+           '경비：*공터에 교복 입은 애가 서 있다.* 10년 전부터 나온 얘기다.', '경비：철문은 그때 잠근 거야. 열쇠는 동아리 애들이 갖고 있었지.']);
+      state.heardRumor = true;
+    }
+  }
+  if (t.id === 'senior') {
+    if (!state.heardRumor) say(['선배：동아리방 문은 열려 있어. 선반 사진은 건드리지 마.']);
+    else if (!state.hasKey) {
+      say(['선배：공터 소문? …경비 아저씨가 말했구나.', '선배：그 철문 열쇠, 내가 갖고 있어.',
+           '선배：10년 전에 *우리 누나*가 거기서 사라졌거든.', '선배：…*진짜인지 확인하고 와.* 난 못 가겠어.']);
+      state.hasKey = true;
+    }
+    else if (!state.hasRibbon) say(['선배：손전등은 챙겼지?']);
+    else if (!talk.seniorThanked) {
+      say(['선배：그 리본…!', '선배：*누나 거야.* 마지막 날 하고 나갔던.', '선배：동아리방 선반, 누나 사진 옆에 둬 줘.']);
+      talk.seniorThanked = true;
+    }
+    else say(['선배：…고마워.']);
+  }
+  if (t.id === 'ribbon') {
+    say(['하루：…빨간 리본. 낡았어.']);
+    state.items.push('낡은 리본');
+    state.hasRibbon = true;
+    state.eventDone = true;
+  }
+  if (t.id === 'gate') {
+    if (!state.hasKey) say(['하루：잠겨 있어…']);
+    else { say(['하루：…열렸다.']); state.gateOpen = true; scenes[0].blockers = []; }
+  }
+  if (t.id === 'lot') {
+    if (!flashlight) say(['하루：너무 어두워서 안 보여.']);
+    else { ev.phase = 'tintIn'; ev.t = 0; ev.ghostDir = leader.x >= t.x0 ? 1 : -1; ev.ghostX = t.x0 - ev.ghostDir * 18; }
+  }
+  if (t.id === 'door') {
+    sceneIndex = 2; leader.x = 260; leader.dir = -1; resetHistory();
+  }
+  if (t.id === 'shelf') {
+    shelfEdit.on = true;
+    let best = 0;
+    SHELF_X.forEach((x, i) => { if (Math.abs(x - leader.x) < Math.abs(SHELF_X[best] - leader.x)) best = i; });
+    shelfEdit.sel = best;
+  }
+}
+
+// ===== 선반 편집 =====
+const shelfEdit = { on: false, sel: 0 };
+function shelfKey(code) {
+  if (code === 'ArrowLeft') shelfEdit.sel = Math.max(0, shelfEdit.sel - 1);
+  if (code === 'ArrowRight') shelfEdit.sel = Math.min(SHELF_X.length - 1, shelfEdit.sel + 1);
+  if (code === 'KeyX') shelfEdit.on = false;
+  if (code === 'Space') {
+    const i = shelfEdit.sel;
+    if (state.shelf[i]) { state.items.push(state.shelf[i]); state.shelf[i] = null; }
+    else if (state.items.length) {
+      state.shelf[i] = state.items.shift();
+      if (state.shelf[i] === '낡은 리본' && !state.ribbonLogged) {
+        state.ribbonLogged = true;
+        say(['미나：사진 속 사람… 같은 리본을 하고 있어.', '하루：…*진짜 괴담*, 하나 기록.']);
+      }
+    }
+  }
+}
+
+// 선반 물건 (캐릭터 레이어에 그림, 바닥 y=142)
+function drawItem(name, cx, b = SHELF_BOTTOM) {
+  if (name === '깨진 손거울') {
+    for (let dy = -5; dy <= 5; dy++) {           // 테두리 원
+      const hw = Math.round(Math.sqrt(25 - dy * dy));
+      px(cx - hw, b - 10 + dy, hw * 2 + 1, 1, '#8a8a8a');
+    }
+    for (let dy = -4; dy <= 4; dy++) {           // 거울면
+      const hw = Math.round(Math.sqrt(16 - dy * dy)) - 1;
+      if (hw >= 0) px(cx - hw, b - 10 + dy, hw * 2 + 1, 1, '#eeeeee');
+    }
+    px(cx - 2, b - 13, 1, 1, '#404040'); px(cx - 1, b - 12, 1, 1, '#404040'); // 금 간 선
+    px(cx, b - 11, 1, 2, '#404040'); px(cx + 1, b - 9, 1, 1, '#404040'); px(cx + 2, b - 8, 1, 1, '#404040');
+    px(cx, b - 10, 2, 1, '#404040');
+    px(cx - 1, b - 4, 2, 4, '#7a7a7a');          // 손잡이
+  }
+  if (name === '오래된 사진') {
+    px(cx - 6, b - 12, 12, 11, '#5a5a5a');       // 액자
+    px(cx - 4, b - 10, 8, 7, '#d8d8d8');         // 사진
+    px(cx - 2, b - 8, 2, 2, '#707070'); px(cx - 3, b - 6, 4, 3, '#707070'); // 인물
+    px(cx + 1, b - 7, 2, 2, '#8a8a8a'); px(cx + 1, b - 5, 2, 2, '#8a8a8a');
+    px(cx - 4, b - 1, 8, 1, '#3a3a3a');          // 받침
+  }
+  if (name === '낡은 리본') {
+    const R = '#c05050', D = '#903838';          // 이 물건만 색을 남긴다
+    px(cx - 6, b - 10, 2, 6, R); px(cx - 4, b - 9, 2, 4, R); px(cx - 2, b - 8, 1, 2, R); // 왼쪽 고리
+    px(cx + 4, b - 10, 2, 6, R); px(cx + 2, b - 9, 2, 4, R); px(cx + 2, b - 8, 1, 2, R); // 오른쪽 고리
+    px(cx - 1, b - 9, 3, 4, D);                  // 매듭
+    px(cx - 2, b - 5, 2, 2, R); px(cx - 3, b - 3, 2, 3, R); // 꼬리
+    px(cx + 1, b - 5, 2, 2, R); px(cx + 2, b - 3, 2, 3, R);
+  }
+}
+
+// ===== 괴이 이벤트 =====
+// phase: none → tintIn(2초) → talk(대사) → vanish(검정 8프레임) → none
+// fx: 연출 중(그레인 강화·글리치·비네트), flash: 흰 플래시 남은 프레임, shake: 화면 흔들림
+const ev = { phase: 'none', t: 0, tintMix: 0, ghost: false, ghostX: 136, fx: false, flash: 0, shake: false };
+const EVENT_TINT = '#c06060';
+
+function updateEvent() {
+  if (ev.flash > 0) ev.flash--;
+  if (ev.phase === 'none') return;
+  ev.t++;
+  if (ev.phase === 'tintIn') {
+    ev.fx = true;
+    ev.tintMix = Math.min(1, ev.t / 120);
+    if (ev.t === 40) { ev.ghost = true; ev.flash = 3; ev.shake = true; }
+    if (ev.t >= 120) {
+      ev.phase = 'talk';
+      ev.shake = false;
+      say(['？？？：……찾아줘.', '소라：히익…!', '미나：하, 하루… 저기…', '하루：*진짜였어.*']);
+    }
+  } else if (ev.phase === 'talk') {
+    if (!dialog.length) { ev.phase = 'vanish'; ev.t = 0; }
+  } else if (ev.phase === 'vanish') {
+    if (ev.t >= 8) {
+      ev.phase = 'none'; ev.ghost = false; ev.tintMix = 0; ev.fx = false; ev.shake = false;
+      state.ribbonDropped = true;
+      state.ribbonX = Math.round(ev.ghostX);
+      say(['하루：…방금 그거, 봤지?', '소라：바닥에 뭔가 있어.']);
+    }
+  }
+}
+
+function hexMix(a, b, t) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ch = s => Math.round(((pa >> s) & 255) * (1 - t) + ((pb >> s) & 255) * t);
+  return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
+}
+function subtitleOn() { return ev.phase === 'tintIn' && ev.t >= 60; } // tintIn 후반 1초
+function sceneTint(scene) { return ev.tintMix > 0 ? hexMix(scene.tint, EVENT_TINT, ev.tintMix) : scene.tint; }
+
+// ===== 입력 =====
+addEventListener('keydown', e => {
+  if (['ArrowLeft', 'ArrowRight', 'Space', 'KeyF'].includes(e.code)) e.preventDefault();
+  keys[e.code] = true;
+  if (e.repeat) return;
+  if (e.code === 'KeyF') flashlight = !flashlight;
+  if (e.code === 'Space' && dialog.length) { dialog.shift(); return; }
+  if (shelfEdit.on) { if (!dialog.length) shelfKey(e.code); return; }
+  if (e.code === 'Space' && ev.phase === 'none') { const t = nearTarget(); if (t) interact(t); }
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+
+// ===== 업데이트 =====
+function update() {
+  tick++;
+  const scene = scenes[sceneIndex];
+  moving = false;
+  updateEvent();
+  if (dialog.length || ev.phase !== 'none' || shelfEdit.on) return;
+  const d = (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0);
+  if (!d) return;
+  leader.dir = d;
+  let nx = leader.x + d * SPEED;
+  for (const b of scene.blockers) {
+    if (d > 0 && leader.x <= b.x0 && nx > b.x0) nx = b.x0;
+    if (d < 0 && leader.x >= b.x1 && nx < b.x1) nx = b.x1;
+  }
+  if (nx === leader.x) return;
+  leader.x = nx;
+  moving = true;
+  history.push({ x: leader.x, dir: leader.dir });
+  if (history.length > gapFrames() * girls.length + 2) history.shift();
+
+  for (const ex of scene.exits) {
+    if ((ex.side === 'right' && leader.x >= scene.width - 4) || (ex.side === 'left' && leader.x <= 4)) {
+      sceneIndex = ex.to;
+      leader.x = ex.spawnX;
+      leader.dir = ex.dir;
+      resetHistory();
+      return;
+    }
+  }
+  leader.x = Math.max(4, Math.min(scene.width - 4, leader.x));
+}
+
+// ===== 렌더 =====
+function walkBob(x, isMoving) { return isMoving ? (Math.floor(x / 6) & 1) : 0; } // 걷는 중 6px마다 1px
+
+function cone(c, ox, oy, dir, len, half) {
+  const a = dir > 0 ? 0 : Math.PI;
+  c.beginPath();
+  c.moveTo(ox, oy);
+  c.arc(ox, oy, len, a - half, a + half);
+  c.closePath();
+}
+
+function render() {
+  const scene = scenes[sceneIndex];
+  const cam = Math.max(0, Math.min(scene.width - W, leader.x - W / 2));
+  const camR = Math.round(cam);
+
+  // 1) 배경 (무채색)
+  g.globalCompositeOperation = 'source-over';
+  g.globalAlpha = 1;
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  g.save();
+  g.translate(-camR, 0);
+  pc = g;
+  scene.draw.call(scene, cam);
+  g.restore();
+
+  // 1') 캐릭터는 별도 레이어에 무채색으로
+  cg.globalCompositeOperation = 'source-over';
+  cg.globalAlpha = 1;
+  cg.clearRect(0, 0, W, H);
+  cg.save();
+  cg.translate(-camR, 0);
+  pc = cg;
+  if (scene.shelf) state.shelf.forEach((it, i) => { if (it) drawItem(it, SHELF_X[i]); });
+  if (sceneIndex === 0 && state.ribbonDropped && !state.hasRibbon) {
+    drawItem('낡은 리본', state.ribbonX, GROUND);
+    if (tick % 30 < 4) px(state.ribbonX + 4, GROUND - 9, 1, 1, '#ffffff');   // 30프레임마다 반짝임
+  }
+  for (const n of scene.npcs || []) {
+    drawSprite(IMG[n.id], n.x, n.dir);
+  }
+  if (sceneIndex === 0 && ev.ghost && ev.phase !== 'vanish') {
+    const sil = silhouette(IMG.mina, '#3c3c3c');   // 전체 짙은 회색, 얼굴 없음
+    if (sil) drawSprite(sil, ev.ghostX, ev.ghostDir);
+  }
+  for (let i = girls.length - 1; i >= 0; i--) {
+    const h = history[Math.max(0, history.length - 1 - gapFrames() * i)];
+    const img = scene.spriteSuffix ? IMG[girls[i].key + scene.spriteSuffix] : girls[i].img;
+    drawSprite(img, h.x, h.dir, walkBob(h.x, moving));
+  }
+  cg.restore();
+  pc = g;
+
+  // 2) 장면 색조 multiply — 배경은 100%
+  g.globalCompositeOperation = 'multiply';
+  g.fillStyle = sceneTint(scene);
+  g.fillRect(0, 0, W, H);
+
+  // 2') 캐릭터는 색조 50%만, 실루엣 안쪽으로 제한한 뒤 배경 위에 얹기
+  cmg.globalCompositeOperation = 'copy';
+  cmg.drawImage(chr, 0, 0);
+  cg.globalCompositeOperation = 'multiply';
+  cg.globalAlpha = 0.5;
+  cg.fillStyle = sceneTint(scene);
+  cg.fillRect(0, 0, W, H);
+  cg.globalAlpha = 1;
+  cg.globalCompositeOperation = 'destination-in';
+  cg.drawImage(chrMask, 0, 0);
+  g.globalCompositeOperation = 'source-over';
+  g.drawImage(chr, 0, 0);
+
+  // 3) 가로등 불빛 lighter
+  g.globalCompositeOperation = 'lighter';
+  for (const l of scene.lamps) {
+    const lx = l.x - camR, ly = l.y;
+    const r = l.post ? 90 : 50;
+    const grad = g.createRadialGradient(lx, ly, 0, lx, ly + 20, r);
+    grad.addColorStop(0, 'rgba(255,233,176,0.75)');
+    grad.addColorStop(0.3, 'rgba(255,233,176,0.32)');
+    grad.addColorStop(1, 'rgba(255,233,176,0)');
+    g.fillStyle = grad;
+    g.fillRect(lx - r, ly - r, r * 2, r * 2 + 40);
+    if (l.post) {
+      const pool = g.createRadialGradient(lx, GROUND, 0, lx, GROUND, 46);
+      pool.addColorStop(0, 'rgba(255,233,176,0.3)');
+      pool.addColorStop(1, 'rgba(255,233,176,0)');
+      g.fillStyle = pool;
+      g.save(); g.translate(lx, GROUND); g.scale(1, 0.3); g.translate(-lx, -GROUND);
+      g.fillRect(lx - 46, GROUND - 46, 92, 92);
+      g.restore();
+    }
+  }
+
+  // 4) 어둠 / 손전등
+  g.globalCompositeOperation = 'source-over';
+  if (!flashlight) {
+    g.fillStyle = `rgba(0,0,0,${scene.dark ?? 0.55})`;
+    g.fillRect(0, 0, W, H);
+  } else {
+    const hx = Math.round(leader.x) - camR + leader.dir * 4, hy = GROUND - 24;
+    const len = 150, HALF = 0.36;
+    // 어둠 적용 전 장면 보관
+    lg.globalCompositeOperation = 'copy';
+    lg.drawImage(buf, 0, 0);
+    // 화면 전체 어둠
+    g.fillStyle = 'rgba(0,0,0,0.7)';
+    g.fillRect(0, 0, W, H);
+    // 부드러운 원뿔 마스크: 각도를 줄이며 겹쳐 가장자리를 흐리게, 길이 방향은 방사형 그라디언트
+    mg.globalCompositeOperation = 'source-over';
+    mg.clearRect(0, 0, W, H);
+    for (const half of [HALF, HALF * 0.75, HALF * 0.5, HALF * 0.25]) {
+      const m = mg.createRadialGradient(hx, hy, 0, hx, hy, len);
+      m.addColorStop(0, 'rgba(0,0,0,0.55)');
+      m.addColorStop(0.55, 'rgba(0,0,0,0.45)');
+      m.addColorStop(1, 'rgba(0,0,0,0)');
+      mg.fillStyle = m;
+      cone(mg, hx, hy, leader.dir, len, half); mg.fill();
+    }
+    // 원뿔로 clip한 뒤 lit 장면을 마스크 강도만큼 다시 그림
+    dg.globalCompositeOperation = 'source-over';
+    dg.clearRect(0, 0, W, H);
+    dg.save();
+    cone(dg, hx, hy, leader.dir, len, HALF); dg.clip();
+    dg.drawImage(lit, 0, 0);
+    dg.restore();
+    dg.globalCompositeOperation = 'destination-in';
+    dg.drawImage(mask, 0, 0);
+    g.drawImage(dark, 0, 0);
+    // 노란 빛은 아주 약하게
+    g.globalCompositeOperation = 'lighter';
+    const yl = g.createRadialGradient(hx, hy, 0, hx, hy, len);
+    yl.addColorStop(0, 'rgba(255,243,160,0.12)');
+    yl.addColorStop(1, 'rgba(255,243,160,0)');
+    g.fillStyle = yl;
+    cone(g, hx, hy, leader.dir, len, HALF * 0.8); g.fill();
+  }
+
+  // 5) 노이즈 그레인
+  for (let i = 0; i < noise32.length; i++) {
+    const v = (Math.random() * 255) | 0;
+    noise32[i] = ((ev.fx ? 60 : 14) << 24) | (v << 16) | (v << 8) | v;   // 연출 중엔 진하게
+  }
+  ng.putImageData(noiseImg, 0, 0);
+  g.globalCompositeOperation = 'source-over';
+  g.drawImage(noise, 0, 0);
+
+  // 5-1) 괴이 연출 후처리: 흔들림 · 글리치 · 붉은 비네트 · 플래시 · 암전
+  if (ev.fx || ev.flash > 0) {
+    if (ev.shake || ev.fx) {
+      lg.globalCompositeOperation = 'copy';
+      lg.drawImage(buf, 0, 0);                       // 현재 화면 복사
+      const sx = ev.shake ? Math.round(Math.random() * 4 - 2) : 0;
+      const sy = ev.shake ? Math.round(Math.random() * 4 - 2) : 0;
+      g.globalCompositeOperation = 'source-over';
+      if (sx || sy) g.drawImage(lit, sx, sy);
+      if (ev.fx) {                                    // 가로줄 3~5개를 좌우로 2~6px 밀기
+        const n = 3 + Math.floor(Math.random() * 3);
+        for (let k = 0; k < n; k++) {
+          const y = LB + Math.floor(Math.random() * (H - LB * 2 - 4));
+          const h = 1 + Math.floor(Math.random() * 4);
+          const dx = (2 + Math.floor(Math.random() * 5)) * (Math.random() < 0.5 ? -1 : 1);
+          g.drawImage(lit, 0, y, W, h, dx + sx, y + sy, W, h);
+        }
+      }
+    }
+    if (ev.fx) {
+      const vg = g.createRadialGradient(W / 2, H / 2, 50, W / 2, H / 2, 190);
+      vg.addColorStop(0, 'rgba(160,0,0,0)');
+      vg.addColorStop(1, 'rgba(160,0,0,0.6)');
+      g.fillStyle = vg;
+      g.fillRect(0, 0, W, H);
+    }
+    if (ev.flash > 0) { g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H); }
+  }
+  if (ev.phase === 'vanish') { g.fillStyle = '#000000'; g.fillRect(0, 0, W, H); }
+
+  // 5') 상호작용 표시 ▲ — 색조·어둠 이후라 영향 없음
+  if (!dialog.length && ev.phase === 'none' && !shelfEdit.on && Math.floor(tick / 20) % 2 === 0) {
+    const t = nearTarget();
+    if (t) {
+      const ax = Math.round((t.x0 + t.x1) / 2) - camR, ay = t.top - 6;
+      g.fillStyle = '#ffffff';
+      g.fillRect(ax, ay, 1, 1); g.fillRect(ax - 1, ay + 1, 3, 1); g.fillRect(ax - 2, ay + 2, 5, 1);
+    }
+  }
+
+  // 5'') 선반 편집: 선택 칸에 흰 꺾쇠 [ ]
+  if (shelfEdit.on) {
+    const bx = SHELF_X[shelfEdit.sel] - camR, y0 = SHELF_BOTTOM - 17, y1 = SHELF_BOTTOM + 2;
+    g.fillStyle = '#ffffff';
+    g.fillRect(bx - 10, y0, 1, y1 - y0); g.fillRect(bx - 10, y0, 3, 1); g.fillRect(bx - 10, y1 - 1, 3, 1);
+    g.fillRect(bx + 10, y0, 1, y1 - y0); g.fillRect(bx + 8, y0, 3, 1); g.fillRect(bx + 8, y1 - 1, 3, 1);
+  }
+
+  // 6) 레터박스
+  g.fillStyle = '#000000';
+  g.fillRect(0, 0, W, LB);
+  g.fillRect(0, H - LB, W, LB);
+
+  // 7) 메인 캔버스 확대 + 대사
+  const dpr = window.devicePixelRatio || 1;
+  const MW = Math.floor(innerWidth * dpr), MH = Math.floor(innerHeight * dpr);
+  if (main.width !== MW || main.height !== MH) {
+    main.width = MW; main.height = MH;
+    main.style.width = innerWidth + 'px'; main.style.height = innerHeight + 'px';
+  }
+  const s = Math.max(1, Math.floor(Math.min(MW / W, MH / H)));
+  const ox = Math.floor((MW - W * s) / 2), oy = Math.floor((MH - H * s) / 2);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, MW, MH);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(buf, ox, oy, W * s, H * s);
+
+  // 괴이 자막: 화면 중앙, 큰 붉은 글씨, 매 프레임 ±1px 떨림
+  if (subtitleOn()) {
+    ctx.font = `${Math.round(20 * s)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#e03030';
+    const jx = Math.round(Math.random() * 2 - 1) * s, jy = Math.round(Math.random() * 2 - 1) * s;
+    ctx.fillText('…찾아줘.', ox + (W / 2) * s + jx, oy + (H / 2) * s + jy);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  if (dialog.length) {
+    const line = dialog[0];
+    const fs = Math.round(9 * s);
+    ctx.font = `${fs}px sans-serif`;
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    const tx = ox + 22 * s, ty = oy + (H - LB - 6) * s;
+    const sh = Math.max(1, Math.round(dpr));
+    ctx.shadowColor = '#000000';
+    ctx.shadowOffsetX = sh; ctx.shadowOffsetY = sh; ctx.shadowBlur = 0;
+    // *별표* 구간은 노란색, 별표 문자는 숨김
+    let cx = tx;
+    line.split('*').forEach((seg, i) => {
+      ctx.fillStyle = i % 2 ? '#ffd84a' : '#ffffff';
+      ctx.fillText(seg, cx, ty);
+      cx += ctx.measureText(seg).width;
+    });
+    ctx.fillStyle = '#ffffff';
+    if (Math.floor(tick / 30) % 2 === 0) {
+      const endX = cx + fs * 0.4;
+      ctx.font = `${Math.round(fs * 0.7)}px sans-serif`;
+      ctx.fillText('▼', endX, ty);
+    }
+    ctx.shadowColor = 'transparent';
+  }
+
+  // 선반 편집 안내 (하단 레터박스 안, 메인 해상도)
+  if (shelfEdit.on) {
+    const fs = Math.round(7 * s);
+    ctx.font = `${fs}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    const inv = state.items.length ? state.items.join(', ') : '없음';
+    ctx.fillText(`소지품: ${inv}`, ox + (W / 2) * s, oy + (H - LB + 7) * s);
+    ctx.fillText('←→ 선택  스페이스 넣기/빼기  X 나가기', ox + (W / 2) * s, oy + (H - 7) * s);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  // 상단 레터박스: 왼쪽 현재 목표, 오른쪽 조작 안내 (세로 가운데, 메인 해상도)
+  {
+    const fs = Math.round(6 * s);
+    const ty = oy + (LB / 2) * s;
+    ctx.font = `${fs}px sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.fillText(currentGoal(), ox + 6 * s, ty);
+    ctx.textAlign = 'right';
+    ctx.fillText('←→ 이동  스페이스 조사  F 손전등', ox + (W - 6) * s, ty);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+}
+
+// ===== 루프 (60fps 고정 스텝) =====
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(100, now - last);
+  last = now;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
