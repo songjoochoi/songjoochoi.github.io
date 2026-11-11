@@ -457,10 +457,6 @@ function render() {
   for (const n of scene.npcs || []) {
     drawSprite(IMG[n.id], n.x, n.dir);
   }
-  if (sceneIndex === 0 && ev.ghost && ev.phase !== 'vanish') {
-    const sil = silhouette(IMG.mina, '#3c3c3c');   // 전체 짙은 회색, 얼굴 없음
-    if (sil) drawSprite(sil, ev.ghostX, ev.ghostDir);
-  }
   for (let i = girls.length - 1; i >= 0; i--) {
     const h = history[Math.max(0, history.length - 1 - gapFrames() * i)];
     const img = scene.spriteSuffix ? IMG[girls[i].key + scene.spriteSuffix] : girls[i].img;
@@ -553,10 +549,17 @@ function render() {
     cone(g, hx, hy, leader.dir, len, HALF * 0.8); g.fill();
   }
 
+  // 4-1) 유령: 어둠 처리 뒤에 그려서 빛 속에 검은 실루엣으로 또렷하게
+  if (sceneIndex === 0 && ev.ghost && ev.phase !== 'vanish') {
+    const sil = silhouette(IMG.mina, '#141414');
+    if (sil) { g.save(); g.globalCompositeOperation = 'source-over'; g.translate(-camR, 0); pc = g; drawSprite(sil, ev.ghostX, ev.ghostDir); g.restore(); }
+  }
+
   // 5) 노이즈 그레인
+  const fxStrong = ev.phase === 'tintIn' && ev.t >= 40;   // 강한 연출은 유령이 나타나는 순간에만
   for (let i = 0; i < noise32.length; i++) {
     const v = (Math.random() * 255) | 0;
-    noise32[i] = ((ev.fx ? 60 : 14) << 24) | (v << 16) | (v << 8) | v;   // 연출 중엔 진하게
+    noise32[i] = ((fxStrong ? 60 : ev.fx ? 22 : 14) << 24) | (v << 16) | (v << 8) | v;   // 연출 중엔 진하게
   }
   ng.putImageData(noiseImg, 0, 0);
   g.globalCompositeOperation = 'source-over';
@@ -571,7 +574,7 @@ function render() {
       const sy = ev.shake ? Math.round(Math.random() * 4 - 2) : 0;
       g.globalCompositeOperation = 'source-over';
       if (sx || sy) g.drawImage(lit, sx, sy);
-      if (ev.fx) {                                    // 가로줄 3~5개를 좌우로 2~6px 밀기
+      if (fxStrong) {                                 // 가로줄 3~5개를 좌우로 2~6px 밀기
         const n = 3 + Math.floor(Math.random() * 3);
         for (let k = 0; k < n; k++) {
           const y = LB + Math.floor(Math.random() * (H - LB * 2 - 4));
@@ -584,7 +587,7 @@ function render() {
     if (ev.fx) {
       const vg = g.createRadialGradient(W / 2, H / 2, 50, W / 2, H / 2, 190);
       vg.addColorStop(0, 'rgba(160,0,0,0)');
-      vg.addColorStop(1, 'rgba(160,0,0,0.6)');
+      vg.addColorStop(1, `rgba(160,0,0,${fxStrong ? 0.6 : 0.4})`);
       g.fillStyle = vg;
       g.fillRect(0, 0, W, H);
     }
